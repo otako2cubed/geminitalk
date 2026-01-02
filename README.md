@@ -1,53 +1,54 @@
 # geminitalk
-PythonのAPI（`google-generativeai` ライブラリ）を使用して、2つのGeminiモデルに会話をさせるサンプルコードを作成しました。
+ご指摘の通り、Googleは現在、よりモダンで統合的な**Google GenAI SDK (`google-genai`)** への移行を推奨しています。この新ライブラリでは、`Client` オブジェクトをベースとした直感的な操作が可能になっています。
 
-このコードでは、指定した回数（往復数）で自動的に停止する仕組みにしています。また、会話が単調にならないよう、それぞれのモデルに異なる役割（システムインストラクション）を与えられるように構成しています。
+新しい `google-genai` ライブラリを使用した、回数指定付きの対話スクリプトを再作成しました。
 
 ### 事前準備
 
-1. **ライブラリのインストール:**
+1. **新ライブラリのインストール:**
 ```bash
-pip install -U google-generativeai
+pip install -U google-genai
 
 ```
 
 
-2. **APIキーの取得:** [Google AI Studio](https://aistudio.google.com/) からAPIキーを取得してください。
+2. **APIキーの取得:** [Google AI Studio](https://aistudio.google.com/) で取得した既存のキーがそのまま使えます。
 
-### Pythonサンプルコード
+---
+
+### Pythonサンプルコード（google-genai 版）
 
 ```python
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import time
 
 # --- 設定項目 ---
 API_KEY = "あなたのAPIキーをここに記入"
-MODEL_NAME = "gemini-1.5-flash"  # または "gemini-1.5-pro"
-MAX_TURNS = 5  # 往復回数（A→Bで1カウント）
-INITIAL_PROMPT = "「AIが感情を持つことは可能か」というテーマについて、議論を始めてください。"
+MODEL_ID = "gemini-1.5-flash"  # または "gemini-1.5-pro"
+MAX_TURNS = 5  # 往復回数
+INITIAL_PROMPT = "「ローカルLLMを業務で活用するメリットと課題」について議論を始めてください。"
 
 # モデルAの役割設定
-SYSTEM_INSTRUCTION_A = "あなたは科学的な視点を持つ論理的な哲学者です。相手の意見に対して批判的な検討を行い、さらなる議論を促してください。返答は短めに（200文字程度）してください。"
-# モデルBの役割設定
-SYSTEM_INSTRUCTION_B = "あなたは技術的な視点を持つAIエンジニアです。最新の技術動向を踏まえ、楽観的な見解を述べてください。返答は短めに（200文字程度）してください。"
+CONFIG_A = types.GenerateContentConfig(
+    system_instruction="あなたはセキュリティを重視するサーバーエンジニアです。データ漏洩リスクの観点からローカルLLMの必要性を説いてください。返答は簡潔に。",
+    temperature=0.7,
+)
 
-# APIの初期化
-genai.configure(api_key=API_KEY)
+# モデルBの役割設定
+CONFIG_B = types.GenerateContentConfig(
+    system_instruction="あなたはコストと運用効率を重視するITマネージャーです。ハードウェアコストやメンテナンスの負担の観点から慎重な意見を述べてください。返答は簡潔に。",
+    temperature=0.7,
+)
 
 def start_dialogue():
-    # 2つの異なるインスタンス（役割）を作成
-    model_a = genai.GenerativeModel(
-        model_name=MODEL_NAME,
-        system_instruction=SYSTEM_INSTRUCTION_A
-    )
-    model_b = genai.GenerativeModel(
-        model_name=MODEL_NAME,
-        system_instruction=SYSTEM_INSTRUCTION_B
-    )
+    # クライアントの初期化
+    client = genai.Client(api_key=API_KEY)
 
-    # 各モデルの会話履歴を管理するオブジェクト
-    chat_a = model_a.start_chat(history=[])
-    chat_b = model_b.start_chat(history=[])
+    # それぞれのチャットセッションを開始
+    # google-genaiでは client.chats.create を使用します
+    chat_a = client.chats.create(model=MODEL_ID, config=CONFIG_A)
+    chat_b = client.chats.create(model=MODEL_ID, config=CONFIG_B)
 
     print(f"--- 対話開始：テーマ「{INITIAL_PROMPT}」 ---\n")
 
@@ -61,20 +62,15 @@ def start_dialogue():
         text_a = response_a.text
         print(f"\n[Gemini A]:\n{text_a}\n")
         
-        # モデルBへの入力として渡す
         current_input = text_a
-        
-        # APIのレート制限回避のための短い待機（必要に応じて調整）
-        time.sleep(1)
+        time.sleep(1) # レート制限対策
 
         # --- Model B の発言 ---
         response_b = chat_b.send_message(current_input)
         text_b = response_b.text
         print(f"[Gemini B]:\n{text_b}\n")
         
-        # 次のループでモデルAへの入力として渡す
         current_input = text_b
-        
         time.sleep(1)
         print("-" * 30)
 
@@ -85,17 +81,18 @@ if __name__ == "__main__":
 
 ```
 
-### コードのポイント解説
+---
 
-1. **`MAX_TURNS` による終了条件:** `for` ループを使用して、指定した回数に達すると自動的に `print` して終了します。これにより、意図しないAPI消費を防げます。
-2. **`system_instruction` の活用:**
-同じモデル名でも、システムプロンプトを変えることで「保守派 vs 革新派」のような対立構造を作ることができます。これにより、会話がループ（同じことの言い合い）にならずに深まりやすくなります。
-3. **`start_chat` によるコンテキスト維持:**
-`send_message` を使うことで、それぞれのモデルが「これまでの自分の発言と相手の発言」を記憶した状態で会話を続けます。
-4. **レート制限（Rate Limit）対策:**
-`time.sleep(1)` を入れることで、短時間にリクエストを送りすぎてエラーになるのを防いでいます（無料枠を使っている場合は特に重要です）。
+### 旧ライブラリからの主な変更点
 
-### 運用のヒント
+1. **インポート文:** `from google import genai` になりました。
+2. **クライアント制:** `client = genai.Client(api_key=...)` のように、インスタンスを作って操作する形式に統一されました。
+3. **設定の集約:** `system_instruction` や `temperature` などのパラメータは、`types.GenerateContentConfig` オブジェクトとしてまとめて渡すスタイルになっています。
+4. **チャットの開始:** `client.chats.create(model=...)` でセッションを開始します。
 
-* **要約の導入:** もし非常に長い会話（50往復など）をさせたい場合は、履歴が長くなりすぎてエラーになることがあります。その場合は、数回ごとに「これまでの議論を要約して」という指示を挟む処理を追加すると安定します。
-* **モデルの使い分け:** `MODEL_NAME` に `gemini-1.5-flash` を使うと高速で安価（または無料枠が多い）ですが、より深い議論をさせたい場合は片方を `gemini-1.5-pro` に変えるのも面白いです。
+### 発展的な活用方法
+
+* **履歴の保存:** 各ターンの `text_a` と `text_b` をリストに保存し、最後にテキストファイルやJSONとして書き出す処理を加えると、後でログを確認しやすくなります。
+* **異なるモデルの対決:** `MODEL_ID` を Model A は `gemini-1.5-pro`、Model B は `gemini-1.5-flash` と分けることで、知能指数の異なるモデル同士の壁打ちをシミュレーションすることも可能です。
+
+次は、この対話結果をテキストファイルに自動保存する機能などを追加しましょうか？ご要望があればお知らせください。
