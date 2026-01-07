@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemini Dialogue Tool</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .chat-log { height: 500px; overflow-y: auto; }
+        .spinner { border: 3px solid #f3f3f3; border-top: 3px solid #3498db; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; display: inline-block; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen p-4 md:p-8">
+    <div class="max-w-4xl mx-auto bg-white rounded-lg shadow-md p-6">
+        <h1 class="text-2xl font-bold mb-6 text-gray-800">Gemini 同士の対話シミュレーター</h1>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            <div class="col-span-1 md:col-span-2">
+                <label class="block text-sm font-medium text-gray-700">APIキー</label>
+                <input type="text" id="apiKey" class="mt-1 block w-full border border-gray-300 rounded-md p-2 shadow-sm focus:ring-blue-500 focus:border-blue-500" placeholder="AIza...">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700">モデルID</label>
+                <input type="text" id="modelId" value="gemini-3-flash-preview" class="mt-1 block w-full border border-gray-300 rounded-md p-2 shadow-sm">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700">往復回数 (MAX_TURNS)</label>
+                <input type="number" id="maxTurns" value="5" min="1" class="mt-1 block w-full border border-gray-300 rounded-md p-2 shadow-sm">
+            </div>
+            <div class="col-span-1 md:col-span-2">
+                <label class="block text-sm font-medium text-gray-700">イニシャルプロンプト</label>
+                <textarea id="initialPrompt" rows="2" class="mt-1 block w-full border border-gray-300 rounded-md p-2 shadow-sm">AIと人間の共生について議論してください。</textarea>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700">モデルAの役割</label>
+                <textarea id="roleA" rows="3" class="mt-1 block w-full border border-gray-300 rounded-md p-2 shadow-sm text-sm">あなたは慎重な哲学者です。論理的かつ批判的な視点で返答してください。</textarea>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700">モデルBの役割</label>
+                <textarea id="roleB" rows="3" class="mt-1 block w-full border border-gray-300 rounded-md p-2 shadow-sm text-sm">あなたは楽観的な技術者です。最新技術がもたらす希望について語ってください。</textarea>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700">待ち時間 (秒)</label>
+                <input type="number" id="waitTime" value="12" min="1" class="mt-1 block w-full border border-gray-300 rounded-md p-2 shadow-sm">
+            </div>
+        </div>
+
+        <div class="flex gap-4 mb-6">
+            <button id="actionBtn" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-md shadow-lg transition duration-200">
+                対話開始
+            </button>
+            <button id="downloadBtn" disabled class="bg-gray-400 text-white font-bold py-2 px-6 rounded-md shadow-lg cursor-not-allowed">
+                Markdown保存
+            </button>
+            <div id="statusArea" class="flex items-center text-sm text-gray-600"></div>
+        </div>
+
+        <div id="chatLog" class="chat-log border-t border-gray-200 pt-4 space-y-4">
+            <p class="text-gray-400 text-center mt-10">ここに会話が表示されます</p>
+        </div>
+    </div>
+
+    <script type="module">
+        import { GoogleGenerativeAI } from "https://esm.run/@google/generative-ai";
+
+        let dialogueHistory = "";
+        let isRunning = false;
+
+        const actionBtn = document.getElementById('actionBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const chatLog = document.getElementById('chatLog');
+        const statusArea = document.getElementById('statusArea');
+
+        const sleep = (s) => new Promise(resolve => setTimeout(resolve, s * 1000));
+
+        function appendLog(role, text) {
+            const div = document.createElement('div');
+            const isA = role === 'Gemini A';
+            div.className = `p-4 rounded-lg border ${isA ? 'bg-blue-50 border-blue-200' : 'bg-green-50 border-green-200'} mb-2`;
+            div.innerHTML = `<strong class="block text-gray-700 mb-1">${role}</strong><div class="text-gray-800 whitespace-pre-wrap">${text}</div>`;
+            chatLog.appendChild(div);
+            chatLog.scrollTop = chatLog.scrollHeight;
+
+            dialogueHistory += `### ${role}\n${text}\n\n`;
+            
+            // 会話が1つでもあれば保存ボタンを有効化
+            enableDownload();
+        }
+
+        function enableDownload() {
+            downloadBtn.disabled = false;
+            downloadBtn.classList.replace('bg-gray-400', 'bg-green-600');
+            downloadBtn.classList.remove('cursor-not-allowed');
+        }
+
+        async function startProcess() {
+            const apiKey = document.getElementById('apiKey').value;
+            const modelId = document.getElementById('modelId').value;
+            const maxTurns = parseInt(document.getElementById('maxTurns').value);
+            const waitTime = parseInt(document.getElementById('waitTime').value);
+            const initialPrompt = document.getElementById('initialPrompt').value;
+            const roleA = document.getElementById('roleA').value;
+            const roleB = document.getElementById('roleB').value;
+
+            if (!apiKey) {
+                alert("APIキーを入力してください。");
+                return;
+            }
+
+            // 初期化
+            isRunning = true;
+            updateBtnUI(true);
+            chatLog.innerHTML = "";
+            dialogueHistory = `# Gemini Dialogue Log\n- Theme: ${initialPrompt}\n- Model: ${modelId}\n\n`;
+            statusArea.innerText = "準備中...";
+
+            try {
+                const genAI = new GoogleGenerativeAI(apiKey);
+                const modelA = genAI.getGenerativeModel({ model: modelId, systemInstruction: roleA });
+                const modelB = genAI.getGenerativeModel({ model: modelId, systemInstruction: roleB });
+
+                const chatA = modelA.startChat();
+                const chatB = modelB.startChat();
+
+                let currentInput = initialPrompt;
+
+                for (let i = 1; i <= maxTurns; i++) {
+                    if (!isRunning) break;
+
+                    // --- Model A ---
+                    statusArea.innerHTML = `<span class="spinner mr-2"></span> ターン ${i} (Gemini A 思考中...)`;
+                    const resultA = await chatA.sendMessage(currentInput);
+                    const textA = resultA.response.text();
+                    appendLog('Gemini A', textA);
+                    currentInput = textA;
+
+                    if (!isRunning) break;
+                    await sleep(waitTime);
+
+                    // --- Model B ---
+                    statusArea.innerHTML = `<span class="spinner mr-2"></span> ターン ${i} (Gemini B 思考中...)`;
+                    const resultB = await chatB.sendMessage(currentInput);
+                    const textB = resultB.response.text();
+                    appendLog('Gemini B', textB);
+                    currentInput = textB;
+
+                    if (i < maxTurns && isRunning) {
+                        statusArea.innerHTML = `待ち時間中 (${waitTime}秒)...`;
+                        await sleep(waitTime);
+                    }
+                }
+                statusArea.innerText = isRunning ? "完了しました。" : "途中で停止されました。";
+
+            } catch (error) {
+                console.error(error);
+                let errorMsg = error.message.includes("429") 
+                    ? "エラー(429): レート制限。待ち時間を増やしてください。" 
+                    : "エラーが発生しました。";
+                statusArea.innerHTML = `<span class="text-red-500 font-bold">${errorMsg}</span>`;
+            } finally {
+                isRunning = false;
+                updateBtnUI(false);
+            }
+        }
+
+        function updateBtnUI(running) {
+            if (running) {
+                actionBtn.innerText = "対話停止";
+                actionBtn.classList.replace('bg-blue-600', 'bg-red-600');
+                actionBtn.classList.replace('hover:bg-blue-700', 'hover:bg-red-700');
+            } else {
+                actionBtn.innerText = "対話開始";
+                actionBtn.classList.replace('bg-red-600', 'bg-blue-600');
+                actionBtn.classList.replace('hover:bg-red-700', 'hover:bg-blue-700');
+            }
+        }
+
+        actionBtn.addEventListener('click', () => {
+            if (isRunning) {
+                isRunning = false; // 停止フラグを立てる
+                statusArea.innerText = "停止リクエスト中...";
+            } else {
+                startProcess();
+            }
+        });
+
+        downloadBtn.addEventListener('click', () => {
+            const blob = new Blob([dialogueHistory], { type: 'text/markdown' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `gemini-dialogue-${Date.now()}.md`;
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+    </script>
+</body>
+</html>
